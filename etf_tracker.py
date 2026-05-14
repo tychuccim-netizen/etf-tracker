@@ -1,91 +1,72 @@
 import pandas as pd
 import streamlit as st
+import requests
 import datetime
 
-# 定義目標 ETF 的標準代號與名稱常數字典
-TARGET_ETFS = {
-    "00981A": "主動統一台股增長",
-    "00403A": "統一台股升級 50 主動式 ETF"
+# 設定網頁標題與寬版顯示
+st.set_page_config(page_title="日月鑫籌碼戰情室", layout="wide")
+
+# 💼 總裁專屬戰略物資庫：雙軌 ETF 網址設定
+ETF_CONFIG = {
+    "00981A": {
+        "name": "主動統一台股增長",
+        "url": "https://www.pscnet.com.tw/pscnetStock/menuContent.do?main_id=38b3f10a07000000083acb70970ca6cb&sub_id=38d1d31174000000ce140c65c110c18122"
+    },
+    "00403A": {
+        "name": "統一台股升級 50",
+        "url": "https://www.pscnet.com.tw/pscnetStock/menuContent.do?main_id=38b3f10a07000000083acb70970ca6cb&sub_id=38d1d31174000000ce140c65c110c181"
+    }
 }
 
-def fetch_and_verify_holdings(target_code):
+@st.cache_data(ttl=3600) # 快取機制：避免頻繁切換時重複抓取被封鎖
+def fetch_real_market_data(url):
     """
-    抓取並雙重核對 ETF 代號與名稱
+    資料採集引擎 (Web Crawler)
     """
-    expected_name = TARGET_ETFS.get(target_code)
-    
-    # --- 模擬爬蟲抓取網頁標題與代號的過程 ---
-    # 實務上，這裡會使用 requests 搭配 BeautifulSoup 抓取官網的 <h1> 或特定 class 內容
-    # 這裡我們模擬爬蟲成功抓到正確網頁的情境
-    scraped_code = target_code 
-    scraped_name = expected_name 
-    
-    # 🛡️ 核心防呆機制：雙重核對
-    if scraped_code != target_code or scraped_name != expected_name:
-        # 若資料不符，拋出例外錯誤，阻斷錯誤資料流入戰情室
-        raise ValueError(f"⚠️ 資料源核對失敗！預期擷取：{target_code} {expected_name}，但實際網頁顯示為：{scraped_code} {scraped_name}。請確認官網網址或網頁結構是否異動。")
-    
-    # 核對成功後，才繼續抓取成分股明細（以下為模擬數據）
-    data = {
-        "標的": ["健鼎", "旺宏", "台積電", "聯發科"],
-        "代號": ["3044", "2337", "2330", "2454"],
-        "今日張數": [3500, 21000, 5000, 1200],
-        "昨日張數": [3407, 10468, 5000, 1500],
-        "股價": [529.0, 168.0, 800.0, 1100.0],
-        "漲跌幅": [9.98, 9.80, 1.2, -2.5]
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-    return pd.DataFrame(data), expected_name
-
-def analyze_movements(df):
-    """計算籌碼變動幅度與判定狀態"""
-    df['變動張數'] = df['今日張數'] - df['昨日張數']
-    df['變動幅度'] = (df['變動張數'] / df['昨日張數']) * 100
-    
-    def get_status(row):
-        if row['昨日張數'] == 0 and row['今日張數'] > 0: return "新進"
-        if row['今日張數'] == 0 and row['昨日張數'] > 0: return "出清"
-        if row['變動張數'] > 0: return "加碼"
-        if row['變動張數'] < 0: return "減碼"
-        return "持平"
-    
-    df['狀態'] = df.apply(get_status, axis=1)
-    return df
-
-def main():
-    st.set_page_config(page_title="籌碼追蹤戰情室", layout="wide")
-    
-    # 透過側邊欄選擇要監控的標的
-    selected_code = st.sidebar.selectbox("選擇監控標的", list(TARGET_ETFS.keys()))
     
     try:
-        # 執行抓取與雙重核對
-        df_raw, etf_name = fetch_and_verify_holdings(selected_code)
-        df_result = analyze_movements(df_raw)
+        response = requests.get(url, headers=headers, timeout=15)
+        response.encoding = 'utf-8' # 確保繁體中文不亂碼
         
-        st.title(f"📊 {selected_code} {etf_name} 籌碼監控")
-        st.write(f"資料核對狀態：✅ 雙重驗證通過 | 更新時間：{datetime.datetime.now().strftime('%Y-%m-%d 17:30')}")
-
-        # 頂部戰略儀表板
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("新增 (潛力建倉)", len(df_result[df_result['狀態'] == '新進']))
-        col2.metric("出清 (重點警示)", len(df_result[df_result['狀態'] == '出清']))
-        col3.metric("加碼 (趨勢向上)", len(df_result[df_result['狀態'] == '加碼']))
-        col4.metric("減碼 (籌碼轉弱)", len(df_result[df_result['狀態'] == '減碼']))
-
-        # 呈現明細表格
-        st.markdown("### 資金交易明細")
-        
-        # 為了視覺化更容易判讀，針對加減碼加上顏色標示 (Streamlit style)
-        def highlight_status(val):
-            color = '#ff4b4b' if val in ['加碼', '新進'] else '#00cc96' if val in ['減碼', '出清'] else ''
-            return f'color: {color}'
+        # 尋找網頁中的所有表格
+        tables = pd.read_html(response.text)
+        return tables if tables else None
             
-        st.dataframe(df_result[['標的', '代號', '股價', '狀態', '變動張數', '變動幅度']].style.map(highlight_status, subset=['狀態']), use_container_width=True)
-
+    except ValueError:
+        return "解析失敗：該網頁沒有標準的 HTML 表格，可能需要更深層的技術突破。"
     except Exception as e:
-        # 捕捉核對失敗或其他例外錯誤
-        st.error(str(e))
-        st.warning("系統已啟動防護機制，暫停顯示該檔 ETF 資訊。請通知管理員進行網頁結構排查。")
+        return f"連線異常：{str(e)}"
+
+def main():
+    # 🎛️ 側邊欄：戰略切換器
+    selected_code = st.sidebar.selectbox("🎯 選擇監控標的", list(ETF_CONFIG.keys()))
+    etf_name = ETF_CONFIG[selected_code]["name"]
+    target_url = ETF_CONFIG[selected_code]["url"]
+
+    st.title(f"📊 {selected_code} {etf_name} 真實籌碼探測雷達")
+    st.write(f"系統更新時間：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.markdown("---")
+    
+    st.info(f"🔄 正在向統一證券官網調度資源，解析 {selected_code} 完整持股名單...")
+    
+    # 啟動採集引擎，並帶入對應的網址
+    extracted_data = fetch_real_market_data(target_url)
+    
+    if isinstance(extracted_data, list):
+        st.success(f"✅ 成功突破防線！系統在該網址中掃描到 {len(extracted_data)} 個資料表。")
+        
+        st.markdown("### 📡 原始數據截獲清單 (Raw Data)")
+        for i, df in enumerate(extracted_data):
+            st.write(f"**表格 {i+1}** (共 {len(df)} 筆資料)")
+            st.dataframe(df, use_container_width=True)
+            
+    elif isinstance(extracted_data, str):
+        st.error(f"⚠️ 雷達警示：{extracted_data}")
+    else:
+        st.warning("網頁連線成功，但未能辨識出標準的表格結構。")
 
 if __name__ == "__main__":
     main()
