@@ -4,6 +4,7 @@ import requests
 import datetime
 import urllib3
 import os
+import numpy as np
 
 # 關閉 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -46,16 +47,13 @@ def process_and_analyze(df, code):
     df = df[["代號", "標的", "權重(%)", "今日張數"]]
     
     # 2. 核心：讀取歷史存檔進行真實 T-1 比對
-    # 若無歷史檔案，則暫時以今日數據作為基準
     df["昨日張數"] = df["今日張數"] 
     if os.path.exists(HISTORY_FILE):
         try:
             hist_df = pd.read_csv(HISTORY_FILE)
-            # 僅篩選該 ETF 昨天的紀錄
-            yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-            prev_data = hist_df[(hist_df['ETF'] == code) & (hist_df['日期'] < datetime.datetime.now().strftime('%Y-%m-%d'))]
+            today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+            prev_data = hist_df[(hist_df['ETF'] == code) & (hist_df['日期'] < today_str)]
             if not prev_data.empty:
-                # 取得最近一次的紀錄進行對位
                 latest_date = prev_data['日期'].max()
                 prev_record = prev_data[prev_data['日期'] == latest_date]
                 df = df.merge(prev_record[['代號', '今日張數']], on='代號', how='left', suffixes=('', '_prev'))
@@ -80,7 +78,11 @@ def process_and_analyze(df, code):
     df['今日張數顯示'] = df['今日張數'].apply(lambda x: f"{int(x):,}")
     df['變動張數顯示'] = df['變動張數'].apply(lambda x: f"{int(x):+,}" if x != 0 else "-")
     
-    return df.sort_values('變動張數', ascending=False), True
+    # 排序：以變動絕對值排序
+    df['abs_change'] = df['變動張數'].abs()
+    df = df.sort_values('abs_change', ascending=False).drop('abs_change', axis=1)
+    
+    return df, True
 
 def main():
     selected_code = st.sidebar.selectbox("🎯 選擇監控標的", list(ETF_CONFIG.keys()))
@@ -94,7 +96,6 @@ def main():
     raw_df = fetch_api_data(target_url)
     
     if raw_df is not None and not raw_df.empty:
-        import numpy as np
         analyzed_df, is_standard = process_and_analyze(raw_df, selected_code)
         
         if is_standard:
@@ -105,11 +106,28 @@ def main():
             col4.metric("📉 減碼", len(analyzed_df[analyzed_df['狀態'] == '減碼']))
 
             # 呈現表格
-            styled_df = analyzed_df[["代號", "標的", "權重(%)", "今日張數顯示", "昨日張數", "變動張數顯示", "變動幅度顯示", "狀態"]]
-            styled_df.columns = ["代號", "標的", "權重(%)", "今日張數", "昨日張數", "變動張數", "變動幅度", "狀態"]
+            display_df = analyzed_df[["代號", "標的", "權重(%)", "今日張數顯示", "昨日張數", "變動張數顯示", "變動幅度顯示", "狀態"]]
+            display_df.columns = ["代號", "標的", "權重(%)", "今日張數", "昨日張數", "變動張數", "變動幅度", "狀態"]
             
+            def highlight_status(val):
+                if val in ['加碼', '建倉']: return 'color: #ff4b4b; font-weight: bold;'
+                if val in ['減碼', '出清']: return 'color: #00cc96; font-weight: bold;'
+                return ''
+                
+            def highlight_numbers(val):
+                if isinstance(val, str) and '+' in val: return 'color: #ff4b4b;'
+                if isinstance(val, str) and '-' in val and val != '-': return 'color: #00cc96;'
+                return ''
+                
+            styled_df = display_df.style.map(highlight_status, subset=['狀態'])\
+                                         .map(highlight_numbers, subset=['變動張數', '變動幅度'])
+                                         
             st.dataframe(styled_df, use_container_width=True, height=750)
-            st.info("💡 系統已啟動歷史對位機制。若昨日數據尚未入庫，變動將顯示為持平。")
+            
+            if os.path.exists(HISTORY_FILE):
+                st.success("✅ 系統已成功連結歷史數據庫，正在執行真實對位分析。")
+            else:
+                st.info("💡 系統目前尚未讀取到歷史存檔，首日變動將暫以持平顯示。")
     else:
         st.error("⚠️ 數據獲取失敗。")
 
