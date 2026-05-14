@@ -28,7 +28,8 @@ def fetch_real_market_data(url):
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        # 加入 verify=False，指示系統略過嚴格的 SSL 憑證檢查
+        response = requests.get(url, headers=headers, timeout=15, verify=False)
         response.encoding = 'utf-8' # 確保繁體中文不亂碼
         
         # 尋找網頁中的所有表格
