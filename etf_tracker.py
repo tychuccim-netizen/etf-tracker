@@ -39,25 +39,30 @@ def fetch_api_data(url):
         return None
 
 def process_and_analyze(df, code):
-    if "V2" not in df.columns: return df, False 
-        
+    if "V2" not in df.columns: return df, False, "未知"
+
+    # 💡 提取官方資料日期 (防呆雷達)
+    api_date = df['V1'].iloc[0] if 'V1' in df.columns else "未知"
+
     # 1. 今日數據清洗 (股轉張)
     df["今日張數"] = (pd.to_numeric(df["V5"], errors='coerce').fillna(0) / 1000).round(0).astype(int)
     df = df.rename(columns={"V2": "代號", "V3": "標的", "V4": "權重(%)"})
     df = df[["代號", "標的", "權重(%)", "今日張數"]]
-    
-    # 2. 核心：讀取歷史存檔進行真實 T-1 比對
+
+    # 2. 歷史對位 (真實比對)
     df["昨日張數"] = df["今日張數"] 
     if os.path.exists(HISTORY_FILE):
         try:
             hist_df = pd.read_csv(HISTORY_FILE)
             today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+            # 找尋歷史檔案中小於今日的最新紀錄
             prev_data = hist_df[(hist_df['ETF'] == code) & (hist_df['日期'] < today_str)]
             if not prev_data.empty:
                 latest_date = prev_data['日期'].max()
                 prev_record = prev_data[prev_data['日期'] == latest_date]
                 df = df.merge(prev_record[['代號', '今日張數']], on='代號', how='left', suffixes=('', '_prev'))
-                df["昨日張數"] = df["今日張數_prev"].fillna(0).astype(int)
+                # 若歷史檔案中無此檔股票，昨日張數預設與今日相同(視為建倉或持平)
+                df["昨日張數"] = df["今日張數_prev"].fillna(df["今日張數"]).astype(int)
         except:
             pass
 
@@ -82,7 +87,7 @@ def process_and_analyze(df, code):
     df['abs_change'] = df['變動張數'].abs()
     df = df.sort_values('abs_change', ascending=False).drop('abs_change', axis=1)
     
-    return df, True
+    return df, True, api_date
 
 def main():
     selected_code = st.sidebar.selectbox("🎯 選擇監控標的", list(ETF_CONFIG.keys()))
@@ -96,9 +101,12 @@ def main():
     raw_df = fetch_api_data(target_url)
     
     if raw_df is not None and not raw_df.empty:
-        analyzed_df, is_standard = process_and_analyze(raw_df, selected_code)
+        analyzed_df, is_standard, api_date = process_and_analyze(raw_df, selected_code)
         
         if is_standard:
+            # 💡 官方資料日期雷達
+            st.info(f"📡 官方資料庫最新結算日期：**{api_date}**")
+
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("🔥 新增建倉", len(analyzed_df[analyzed_df['狀態'] == '建倉']))
             col2.metric("👁️ 持平觀望", len(analyzed_df[analyzed_df['狀態'] == '持平']))
@@ -128,6 +136,9 @@ def main():
                 st.success("✅ 系統已成功連結歷史數據庫，正在執行真實對位分析。")
             else:
                 st.info("💡 系統目前尚未讀取到歷史存檔，首日變動將暫以持平顯示。")
+        else:
+            st.warning("⚠️ 格式異常。")
+            st.dataframe(analyzed_df, use_container_width=True)
     else:
         st.error("⚠️ 數據獲取失敗。")
 
