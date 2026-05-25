@@ -45,7 +45,7 @@ def process_and_analyze(df, code):
     df = df[["代號", "標的", "權重(%)", "今日張數"]]
 
     # 核心：強制進行跨日對位 (導入建倉偵測邏輯)
-    df["昨日張數"] = np.nan # 初始預設為空值，用來精準抓出「歷史上不存在」的標的
+    df["昨日張數"] = np.nan
     
     if os.path.exists(HISTORY_FILE):
         try:
@@ -60,7 +60,6 @@ def process_and_analyze(df, code):
                 prev_day_data = prev_records[prev_records['日期'] == latest_date]
                 
                 df = df.merge(prev_day_data[['代號', '今日張數']], on='代號', how='left', suffixes=('', '_prev'))
-                # 如果歷史檔案有這檔股票，帶入歷史張數；如果歷史檔案完全沒這檔股票，帶入 0 (代表新進建倉)
                 df["昨日張數"] = df["今日張數_prev"].fillna(0).astype(int)
                 
                 if "今日張數_prev" in df.columns:
@@ -68,14 +67,16 @@ def process_and_analyze(df, code):
         except Exception as e:
             st.warning(f"資產庫對位提示: {e}")
 
-    # 如果歷史檔案不存在，昨日張數比照今日 (防呆)
+    # 如果歷史檔案不存在，昨日張數比照今日
     if df["昨日張數"].isnull().all():
         df["昨日張數"] = df["今日張數"]
+    else:
+        df["昨日張數"] = df["昨日張數"].fillna(0).astype(int)
 
-    # 🎯 戰略運算：精準判定加碼、減碼與【新進建倉】
+    # 🎯 戰略運算：修正筆誤，確保變動幅度精準計算
     df['變動張數'] = df['今日張數'] - df['昨日張數']
-    df['變動幅度'] = np.where(df['開盤前基數'] == 0, 0, (df['變動張數'] / df['昨日張數']) * 100) # 防除以0
-    df['變動幅度'] = np.where((df['昨日張數'] == 0) & (df['今日張數'] > 0), 100.0, df['變動幅度']) # 建倉定義為 100% 噴出
+    df['變動幅度'] = np.where(df['昨日張數'] == 0, 0, (df['變動張數'] / df['昨日張數']) * 100)
+    df['變動幅度'] = np.where((df['昨日張數'] == 0) & (df['今日張數'] > 0), 100.0, df['變動幅度'])
     
     # 判斷狀態
     def judge_status(row):
@@ -94,7 +95,6 @@ def process_and_analyze(df, code):
     df['今日張數顯示'] = df['今日張數'].apply(lambda x: f"{int(x):,}")
     df['變動張數顯示'] = df['變動張數'].apply(lambda x: f"{int(x):+,}" if x != 0 else "-")
     
-    # 讓「新進建倉」和「大變動」的股票強制排在最前面
     df['排序權重'] = np.where(df['狀態'] == '💥 新進建倉', 999999, df['變動張數'].abs())
     return df.sort_values(by='排序權重', ascending=False).drop(columns=['排序權重']), True, api_date
 
@@ -124,7 +124,6 @@ def main():
             display_df = analyzed_df[["代號", "標的", "權重(%)", "今日張數顯示", "昨日張數", "變動張數顯示", "變動幅度顯示", "狀態"]]
             display_df.columns = ["代號", "標的", "權重(%)", "今日張數", "昨日張數", "變動張數", "變動幅度", "狀態"]
             
-            # 視覺化紅綠燈增強版
             def style_status(v):
                 if v == '💥 新進建倉': return 'background-color: #ffe6e6; color: #ff4b4b; font-weight: bold; border: 1px solid #ff4b4b;'
                 if v == '加碼': return 'color: #ff4b4b; font-weight: bold;'
