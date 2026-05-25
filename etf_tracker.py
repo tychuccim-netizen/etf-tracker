@@ -22,12 +22,13 @@ ETF_CONFIG = {
 
 HISTORY_FILE = "etf_history.csv"
 
-# 💡 快取改為 60 秒，確保前台網頁重新整理時能即時抓到後台新檔案
 @st.cache_data(ttl=60)
 def fetch_api_data(url):
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         response = requests.get(url, headers=headers, timeout=15, verify=False)
+        # 💡 修正點 1：強制使用 utf-8 解碼，徹底解決標的名稱亂碼問題
+        response.encoding = 'utf-8'
         data = response.json()
         return pd.DataFrame(data['ResultSet']['Result'])
     except:
@@ -40,23 +41,32 @@ def process_and_analyze(df, code):
     # 今日數據清洗
     df["今日張數"] = (pd.to_numeric(df["V5"], errors='coerce').fillna(0) / 1000).round(0).astype(int)
     df = df.rename(columns={"V2": "代號", "V3": "標的", "V4": "權重(%)"})
+    
+    # 💡 修正點 2：強制將今日代號全部轉為文字型態 (str)
+    df["代號"] = df["代號"].astype(str).str.strip()
     df = df[["代號", "標的", "權重(%)", "今日張數"]]
 
     # 核心：強制進行跨日對位
     df["昨日張數"] = df["今日張數"]
     if os.path.exists(HISTORY_FILE):
         try:
-            # 💡 加上 timestamp 參數，強制 Streamlit 每次都重新讀取實體 CSV，不走快取
-            hist_df = pd.read_csv(HISTORY_FILE)
-            # 找出歷史檔案中，非今天日期的最後一次紀錄
+            # 💡 修正點 3：讀取歷史檔案時，強制將代號欄位以文字型態(str)讀入，避免型態衝突
+            hist_df = pd.read_csv(HISTORY_FILE, dtype={"代號": str})
+            hist_df["代號"] = hist_df["代號"].astype(str).str.strip()
+            
             today_str = datetime.datetime.now().strftime('%Y-%m-%d')
             prev_records = hist_df[(hist_df['ETF'] == code) & (hist_df['日期'] != today_str)]
             
             if not prev_records.empty:
                 latest_date = prev_records['日期'].max()
                 prev_day_data = prev_records[prev_records['日期'] == latest_date]
+                
+                # 執行乾淨的文字對位 merge
                 df = df.merge(prev_day_data[['代號', '今日張數']], on='代號', how='left', suffixes=('', '_prev'))
                 df["昨日張數"] = df["今日張數_prev"].fillna(df["今日張數"]).astype(int)
+                # 移除 merge 出來的暫存欄位
+                if "今日張數_prev" in df.columns:
+                    df = df.drop(columns=["今日張數_prev"])
         except Exception as e:
             st.warning(f"資產庫對位提示: {e}")
 
